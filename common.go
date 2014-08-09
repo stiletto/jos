@@ -10,11 +10,14 @@ type BlobInfo struct {
     Size int64
     Created time.Time
     Modified time.Time
+    ModifiedLocal time.Time
     MimeType string
     Tag string
     Deleted bool
     Nodes []string
     WriteLocked bool
+    DataStorage string
+    LogRecord string
 }
 
 type DataStorage interface {
@@ -27,4 +30,10 @@ type MetaStorage interface {
     Get(name string) (*BlobInfo, error)
     Set(b *BlobInfo) error
     Delete(b *BlobInfo) error
+    GetLogIterator(since *time.Time) (LogIterator, error)
+}
+
+type LogIterator interface {
+    GetNext() (*BlobInfo, error)
+    Close() error
 }

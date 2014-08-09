@@ -3,6 +3,7 @@ package main;
 import (
 //    "github.com/hoisie/web"
     "io"
+    "errors"
     "hash"
     "encoding/hex"
     "crypto/md5"
@@ -24,7 +25,7 @@ func hello(val string) string {
     return "hello " + val
 }
 
-var bj BlobJar
+var bj *BlobJar
 
 //func get(ctx *web.Context, val string) {
 func get(w http.ResponseWriter, r *http.Request) {
@@ -63,9 +64,38 @@ func get(w http.ResponseWriter, r *http.Request) {
     }
 
     header := w.Header()
+    header.Set("X-Created", meta.Created.UTC().Format(http.TimeFormat))
     header.Set("Content-Type", meta.MimeType)
     header.Set("ETag", meta.Tag)
     http.ServeContent(w, r, "", meta.Modified, data)
+}
+
+func log(w http.ResponseWriter, r *http.Request) {
+    if r.Method != "GET" {
+        w.WriteHeader(405)
+        return
+    }
+
+    sstart := time.Now()
+    iterator, err := bj.Meta.GetLogIterator(nil)
+    if err != nil {
+        w.WriteHeader(500)
+        io.WriteString(w,"Failed to get log iterator\n")
+        return
+    }
+    defer iterator.Close()
+    fmt.Fprintf(w, "%s\n", sstart.UTC())
+    for {
+        bi, err := iterator.GetNext()
+        if err != nil {
+            fmt.Printf("Error while iterating: %#v\n", err)
+            break
+        }
+        if bi == nil {
+            break
+        }
+        fmt.Fprintf(w, "%s|%s\n", bi.Modified.UTC(), bi.Name)
+    }
 }
 
 type HashingReader struct {
@@ -82,15 +112,54 @@ func (hr *HashingReader) Read(p []byte) (int, error) {
     return n, errH
 }
 
+var olderThanStored = errors.New("New blob is older than stored one")
+
+func (bj *BlobJar) Update(newMeta *BlobInfo, r io.Reader) error {
+    bj.Lock(newMeta.Name)
+    defer bj.Unlock(newMeta.Name)
+
+    newMeta.ModifiedLocal = time.Now()
+
+    oldMeta, err := bj.Meta.Get(newMeta.Name)
+    if err == nil {
+        newMeta.Created = oldMeta.Created
+    } else {
+        newMeta.Created = time.Now()
+        oldMeta = nil
+    }
+
+    if oldMeta != nil && !oldMeta.Modified.Before(newMeta.Modified) {
+        return olderThanStored
+    }
+
+    if newMeta.Deleted {
+        newMeta.Size = 0
+        newMeta.Tag = "deleted"
+        bj.Data.Delete(newMeta)
+    } else {
+        hr := &HashingReader{r, md5.New()}
+        nums, err := bj.Data.Save(newMeta, hr)
+        if err != nil {
+            return err
+        }
+        //if newMeta.Size == -1 {
+        newMeta.Size = nums
+        //}
+        newMeta.Tag = hex.EncodeToString(hr.H.Sum(nil))
+    }
+    err = bj.Meta.Set(newMeta)
+    if err != nil {
+        return err
+    }
+    return nil
+}
+
 func modify(w http.ResponseWriter, r *http.Request, val string, delete bool) {
-    fmt.Printf("FUUUUUUUUUUUUUUUUCK: %#v\n", r)
+    //fmt.Printf("FUUUUUUUUUUUUUUUUCK: %#v\n", r)
     if ((r.Method != "PUT") && !delete)||((r.Method != "DELETE") && delete) {
         w.WriteHeader(405)
         return
     }
-
-    bj.Lock(val)
-    defer bj.Unlock(val)
 
     var newMeta BlobInfo
 
@@ -104,49 +173,21 @@ func modify(w http.ResponseWriter, r *http.Request, val string, delete bool) {
         newMeta.Modified = time.Now()
     }
 
-    oldMeta, err := bj.Meta.Get(val)
-    if err == nil {
-        newMeta.Created = oldMeta.Created
-    } else {
-        newMeta.Created = time.Now()
-    }
-
-    if oldMeta != nil && !oldMeta.Modified.Before(newMeta.Modified) {
-        w.WriteHeader(412)
-        io.WriteString(w,"Your blob is older than mine\n")
-        return
-    }
-
-    if delete {
-        newMeta.Size = 0
-        newMeta.Deleted = true
-        newMeta.Tag = "deleted"
-        bj.Data.Delete(&newMeta)
-    } else {
-        newMeta.Deleted = false
-        newMeta.Size, err = r.ContentLength, nil //strconv.ParseInt(ctx.Request.Header.Get("Content-Length"), 10, 64)
-        if err != nil {
-            newMeta.Size = -1
-        }
-
-        hr := &HashingReader{r.Body, md5.New()}
-        nums, err := bj.Data.Save(&newMeta, hr)
-        if err != nil {
-            w.WriteHeader(500)
-            io.WriteString(w, fmt.Sprintf("Unable to save data. %#v\n",err))
+    newMeta.Deleted = delete
+    err = bj.Update(&newMeta, r.Body)
+    fmt.Printf("Update %s -> (%s, %s, %d) %#v\n", val, newMeta.Modified, newMeta.Tag, newMeta.Size, err)
+    if err != nil {
+        if err == olderThanStored {
+            w.WriteHeader(412)
+            io.WriteString(w,"Your blob is older than mine\n")
             return
         }
-        if newMeta.Size == -1 {
-            newMeta.Size = nums
-        }
-        newMeta.Tag = hex.EncodeToString(hr.H.Sum(nil))
-    }
-    err = bj.Meta.Set(&newMeta)
-    if err != nil {
         w.WriteHeader(500)
-        io.WriteString(w, fmt.Sprintf("Unable to save meta. %#v\n",err))
+        fmt.Printf("Error while saving: %#v\n", err)
+        io.WriteString(w, "Unable to save data.\n")
         return
     }
+
     w.WriteHeader(200)
     io.WriteString(w,newMeta.Tag)
 }
@@ -168,8 +209,14 @@ func main() {
         fmt.Printf("Usage: %s <dirname> <host:port>\n", os.Args[0])
         return
     }
+    bj = &BlobJar{}
     bj.Data = &DataStorageFS{os.Args[1]}
-    bj.Meta = &MetaStorageFS{os.Args[1]}
+    var err error
+    bj.Meta, err = NewMetaLDB(os.Args[2])
+    if err != nil {
+        fmt.Printf("Error: %#v\n");
+        return
+    }
     bj.mutexes = map[string]*sync.Mutex{}
     //bj.lock = sync.RWMutex{}
     //lol.Lock()
@@ -177,7 +224,8 @@ func main() {
     http.HandleFunc("/get/", get)
     http.HandleFunc("/put/", put)
     http.HandleFunc("/delete/", del)
-    http.ListenAndServe(os.Args[2], nil)
+    http.HandleFunc("/log/", log)
+    fmt.Printf("%#v\n", http.ListenAndServe(os.Args[3], nil))
     /* web.Get("/get/(.*)", get) //"127.0.0.1:9999"
     web.Put("/put/(.*)", put)
     web.Run("0.0.0.0:9999") */
