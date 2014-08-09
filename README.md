@@ -1,7 +1,7 @@
 jos
 ===
 
-This is JarOfShit. Sometimes consistent, wanna be distributed, not yet fault-tolerant and replicated BLOB storage.
+This is JarOfShit. Sometimes consistent, wanna be distributed, not yet fault-tolerant and still not replicated BLOB storage.
 
 jos is used as avatars storage for [BnW](http://bnw.im).
 
