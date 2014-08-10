@@ -68,7 +68,7 @@ func (storage *MetaStorageLDB) Set(b *BlobInfo) error {
 
 func (storage *MetaStorageLDB) Get(name string) (*BlobInfo, error) {
     data, err := storage.db.Get(storage.uro, []byte("m|"+name))
-    if err != nil {
+    if data == nil || err != nil {
         return nil, err
     }
     bi := &BlobInfo{}
