@@ -31,6 +31,7 @@ type MetaStorage interface {
     Set(b *BlobInfo) error
     Delete(b *BlobInfo) error
     GetLogIterator(since *time.Time) (LogIterator, error)
+    GetListIterator(prefix string) (LogIterator, error)
 }
 
 type LogIterator interface {

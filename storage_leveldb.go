@@ -83,49 +83,76 @@ func (storage *MetaStorageLDB) Delete(b *BlobInfo) error {
     panic("WTF")
 }
 
-type LogIteratorLDB struct {
+type MetaIteratorLDB struct {
     storage *MetaStorageLDB
     snapshot *leveldb.Snapshot
     ro *leveldb.ReadOptions
     iterator *leveldb.Iterator
+    list bool
+    seekto string
 }
 
 func (storage *MetaStorageLDB) GetLogIterator(since *time.Time) (LogIterator, error) {
-    it := &LogIteratorLDB{}
+    var seekto string
+    if since != nil {
+        seekto = mlog(*since,0)
+    } else {
+        seekto = "l|-----------------|00000000"
+    }
+    it := NewMetaIteratorLDB(storage, seekto)
+    it.list = false
+    return it, nil
+}
+
+func NewMetaIteratorLDB(storage *MetaStorageLDB, seekto string) (*MetaIteratorLDB) {
+    it := &MetaIteratorLDB{}
     snapshot := storage.db.NewSnapshot()
     ro := leveldb.NewReadOptions()
     ro.SetSnapshot(snapshot)
     iterator := storage.db.NewIterator(ro)
-    if since != nil {
-        iterator.Seek([]byte(mlog(*since,0)))
-    } else {
-        iterator.Seek([]byte("l|-----------------|00000000"))
-    }
+    iterator.Seek([]byte(seekto))
+    it.seekto = seekto
 
     it.storage = storage
     it.iterator = iterator
     it.snapshot = snapshot
     it.ro = ro
-    return it, nil
+    it.list = false
+    return it
 }
 
-func (it *LogIteratorLDB) GetNext() (*BlobInfo, error) {
+func (it *MetaIteratorLDB) GetNext() (bi *BlobInfo, err error) {
     if !it.iterator.Valid() {
         err := it.iterator.GetError()
         return nil, err
     }
     k := string(it.iterator.Key())
-    if !strings.HasPrefix(k, "l|") {
-        return nil, nil
+    if it.list {
+        if !strings.HasPrefix(k, it.seekto) {
+            return nil, nil
+        }
+        bi = &BlobInfo{}
+        _, err = asn1.Unmarshal(it.iterator.Value(), bi)
+    } else {
+        if !strings.HasPrefix(k, "l|") {
+            return nil, nil
+        }
+        bi, err = it.storage.Get(string(it.iterator.Value()))
     }
-    bi, err := it.storage.Get(string(it.iterator.Value()))
     it.iterator.Next()
     return bi, err
 }
 
-func (it *LogIteratorLDB) Close() (error) {
+func (it *MetaIteratorLDB) Close() (error) {
     it.iterator.Close()
     it.ro.Close()
     it.storage.db.ReleaseSnapshot(it.snapshot)
     return nil
+}
+
+func (storage *MetaStorageLDB) GetListIterator(prefix string) (LogIterator, error) {
+    it := NewMetaIteratorLDB(storage, "m|"+prefix)
+    it.list = true
+    return it, nil
+
 }

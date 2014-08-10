@@ -35,7 +35,7 @@ var bj *BlobJar
 //func get(ctx *web.Context, val string) {
 func get(w http.ResponseWriter, r *http.Request) {
     val := r.URL.Path[len("/get/"):]
-    if r.Method != "GET" {
+    if r.Method != "GET" && r.Method != "HEAD" {
         w.WriteHeader(405)
         return
     }
@@ -211,6 +211,34 @@ func log(w http.ResponseWriter, r *http.Request) {
     }
 }
 
+func list(w http.ResponseWriter, r *http.Request) {
+    if r.Method != "GET" {
+        w.WriteHeader(405)
+        return
+    }
+    val := r.URL.Path[len("/list/"):]
+
+    iterator, err := bj.Meta.GetListIterator(val)
+    if err != nil {
+        w.WriteHeader(500)
+        io.WriteString(w,"Failed to get list iterator\n")
+        return
+    }
+    w.WriteHeader(200)
+    defer iterator.Close()
+    for {
+        bi, err := iterator.GetNext()
+        if err != nil {
+            fmt.Printf("Error while iterating: %#v\n", err)
+            break
+        }
+        if bi == nil {
+            break
+        }
+        fmt.Fprintf(w, "%s|%s|%d|%s\n", bi.Modified, bi.Tag, bi.Size, url.QueryEscape(bi.Name))
+    }
+}
+
 type HashingReader struct {
     R io.Reader
     H hash.Hash
@@ -341,6 +369,7 @@ func main() {
     http.HandleFunc("/delete/", del)
     http.HandleFunc("/log/", log)
     http.HandleFunc("/fetch/", fetch)
+    http.HandleFunc("/list/", list)
     fmt.Printf("%#v\n", http.ListenAndServe(os.Args[3], nil))
     /* web.Get("/get/(.*)", get) //"127.0.0.1:9999"
     web.Put("/put/(.*)", put)
