@@ -61,7 +61,7 @@ function JosVis(canvas, form) {
 	var colors = [];
 	var colorCount = 64;
 	for (var i=0; i<colorCount; i++) {
-		colors.push(this.HslToRgb(Math.trunc(i%8)*360/8, 1.0-0.8*Math.trunc(i/8)/8, 0.5));
+		colors.push(this.HslToRgb(Math.trunc(i%8)*360/8, 1.0-0.4*Math.trunc(i/8)%8, 0.5));
 	}
 
     this.update = function () {
