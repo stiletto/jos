@@ -7,41 +7,45 @@ import (
     "strings"
     "time"
 //    "crypto/sha256"
-    leveldb "code.google.com/p/go-leveldb"
+    //leveldb "code.google.com/p/go-leveldb"
+    leveldb "github.com/syndtr/goleveldb/leveldb"
+    leveldb_cache "github.com/syndtr/goleveldb/leveldb/cache"
+    leveldb_opt "github.com/syndtr/goleveldb/leveldb/opt"
+    leveldb_iterator "github.com/syndtr/goleveldb/leveldb/iterator"
 )
 
 type MetaStorageLDB struct {
     Root string
-    opts *leveldb.Options
-    cache *leveldb.Cache
+    opts *leveldb_opt.Options
+    cache *leveldb_cache.Cache
     db *leveldb.DB
-    uro *leveldb.ReadOptions
-    uwo *leveldb.WriteOptions
+    uro *leveldb_opt.ReadOptions
+    uwo *leveldb_opt.WriteOptions
     itcounter uint32
 }
 
 func NewMetaLDB(Root string) (*MetaStorageLDB, error) {
     storage := &MetaStorageLDB{}
-    opts := leveldb.NewOptions()
-    cache := leveldb.NewLRUCache(10<<20)
-    opts.SetCache(cache)
-    opts.SetCreateIfMissing(true);
-    db, err := leveldb.Open(Root, opts)
+    opts := &leveldb_opt.Options{}
+    //cache := leveldb_cache.NewLRU(10<<20)
+    //opts.SetCache(cache)
+    //opts.SetCreateIfMissing(true);
+    db, err := leveldb.OpenFile(Root, opts)
     if err != nil {
-        cache.Close()
-        opts.Close()
+        //cache.Close()
+        //opts.Close()
         return nil, err
     }
     storage.db = db
     storage.itcounter = 0
-    storage.cache = cache
+    //storage.cache = cache
     storage.opts = opts
-    storage.uro = leveldb.NewReadOptions()
-    storage.uwo = leveldb.NewWriteOptions()
+    storage.uro = &leveldb_opt.ReadOptions{}
+    storage.uwo = &leveldb_opt.WriteOptions{}
 
-    it := db.NewIterator(storage.uro)
-    defer it.Close()
-    it.SeekToFirst()
+    it := db.NewIterator(nil, storage.uro)
+    defer it.Release()
+    //it.SeekToFirst()
     for it = it; it.Valid(); it.Next() {
         fmt.Printf("key: %s\n", it.Key())
     }
@@ -59,15 +63,14 @@ func (storage *MetaStorageLDB) Set(b *BlobInfo) error {
     if err != nil {
         return err
     }
-    wb := leveldb.NewWriteBatch()
-    defer wb.Close()
+    wb := new(leveldb.Batch)
     wb.Put([]byte(log_key), []byte(b.Name))
     wb.Put([]byte(meta_key), asn_b)
-    return storage.db.Write(storage.uwo, wb)
+    return storage.db.Write(wb, storage.uwo)
 }
 
 func (storage *MetaStorageLDB) Get(name string) (*BlobInfo, error) {
-    data, err := storage.db.Get(storage.uro, []byte("m|"+name))
+    data, err := storage.db.Get([]byte("m|"+name), storage.uro)
     if data == nil || err != nil {
         return nil, err
     }
@@ -86,8 +89,8 @@ func (storage *MetaStorageLDB) Delete(b *BlobInfo) error {
 type MetaIteratorLDB struct {
     storage *MetaStorageLDB
     snapshot *leveldb.Snapshot
-    ro *leveldb.ReadOptions
-    iterator *leveldb.Iterator
+    ro *leveldb_opt.ReadOptions
+    iterator leveldb_iterator.Iterator
     list bool
     seekto string
 }
@@ -106,10 +109,13 @@ func (storage *MetaStorageLDB) GetLogIterator(since *time.Time) (LogIterator, er
 
 func NewMetaIteratorLDB(storage *MetaStorageLDB, seekto string) (*MetaIteratorLDB) {
     it := &MetaIteratorLDB{}
-    snapshot := storage.db.NewSnapshot()
-    ro := leveldb.NewReadOptions()
-    ro.SetSnapshot(snapshot)
-    iterator := storage.db.NewIterator(ro)
+    snapshot, err := storage.db.GetSnapshot()
+    if err != nil {
+	panic(err.Error())
+    }	
+    ro := &leveldb_opt.ReadOptions{}
+    //ro.SetSnapshot(snapshot)
+    iterator := snapshot.NewIterator(nil, ro)
     iterator.Seek([]byte(seekto))
     it.seekto = seekto
 
@@ -123,7 +129,7 @@ func NewMetaIteratorLDB(storage *MetaStorageLDB, seekto string) (*MetaIteratorLD
 
 func (it *MetaIteratorLDB) GetNext() (bi *BlobInfo, err error) {
     if !it.iterator.Valid() {
-        err := it.iterator.GetError()
+        err := it.iterator.Error()
         return nil, err
     }
     k := string(it.iterator.Key())
@@ -144,9 +150,8 @@ func (it *MetaIteratorLDB) GetNext() (bi *BlobInfo, err error) {
 }
 
 func (it *MetaIteratorLDB) Close() (error) {
-    it.iterator.Close()
-    it.ro.Close()
-    it.storage.db.ReleaseSnapshot(it.snapshot)
+    it.iterator.Release()
+    it.snapshot.Release()
     return nil
 }
 
